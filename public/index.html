@@ -1,0 +1,86 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MedLink</title>
+<style>
+:root{--c:#0b7285;--bg:#eef3f7;--fg:#14202b;--card:#fff;--mut:#64748b;--line:#e2e8f0}
+@media(prefers-color-scheme:dark){:root{--bg:#0e141b;--fg:#e8eef5;--card:#17202b;--mut:#94a3b8;--line:#263344}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
+.hero{background:linear-gradient(135deg,var(--c),#111827 130%);color:#fff;padding:28px 20px 70px}
+.hero h1{margin:0;font-size:28px}.hero p{margin:4px 0 14px;opacity:.85}
+nav a{display:inline-block;color:#fff;text-decoration:none;padding:6px 14px;border-radius:99px;background:#ffffff26;margin:3px 4px 3px 0;font-size:14px}
+nav a.on{background:#fff;color:#111}
+main{max-width:1000px;margin:-50px auto 40px;padding:0 14px}
+.card{background:var(--card);border-radius:16px;padding:18px;margin:14px 0;box-shadow:0 6px 24px #0000001a;border:1px solid var(--line)}
+h3{margin:0 0 10px}input,select,textarea{width:100%;padding:10px 12px;margin:5px 0;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit}
+button{background:var(--c);color:#fff;border:0;padding:10px 18px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;margin:4px 4px 4px 0}
+button.ghost{background:transparent;color:var(--c);border:1px solid var(--c)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.badge{display:inline-block;background:var(--c);color:#fff;border-radius:99px;padding:1px 10px;font-size:12px}
+.item{border-left:4px solid var(--c);padding:6px 12px;margin:8px 0;background:var(--bg);border-radius:0 10px 10px 0}
+.mut{color:var(--mut);font-size:13px}.top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 20px;border-radius:99px;display:none;z-index:9}
+.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:6px;text-align:left}
+</style></head><body>
+<div class="hero"><h1 id="t">MedLink</h1><p id="sub">Connected hospitals · one patient file</p><nav id="nav"></nav></div>
+<main>
+<div id="login" class="card" style="max-width:420px;margin:14px auto"><h3>🔐 Staff sign in</h3>
+<input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password"><button onclick="login()">Sign in</button>
+<p class="mut">Demo: doctor_zliten / Pass1234</p></div>
+<div id="app" hidden>
+<div class="card top"><div><b id="who"></b><div class="mut" id="role"></div></div><button class="ghost" onclick="location.reload()">Sign out</button></div>
+<div id="panel"></div></div></main><div id="toast"></div>
+<script>
+// ---------- basics ----------
+const slug=location.pathname.split('/')[2]||'tripoli';          // which hospital page we are on (from the URL)
+let T='',ME={},CUR=null;                                         // T = login token, ME = who I am, CUR = patient record being viewed
+const $=i=>document.getElementById(i), val=i=>$(i).value;
+const toast=m=>{const t=$('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3500)};
+async function api(path,method='GET',body){                      // talks to our server; sends the token as proof of login
+ const r=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+T},body:body?JSON.stringify(body):undefined});
+ let d={};try{d=await r.json()}catch{} return [r.ok,d]}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const date=s=>s?new Date(s).toLocaleDateString():'';
+// ---------- hospital branding ----------
+(async()=>{const c=await (await fetch('/api/centers/'+slug)).json();
+ if(c.name){$('t').textContent='🏥 '+c.name;$('sub').textContent=c.city+' · connected to the national patient network';
+  document.documentElement.style.setProperty('--c',c.theme_color);document.title=c.name}
+ const all=await (await fetch('/api/centers')).json();
+ $('nav').innerHTML=all.map(x=>`<a href="/h/${x.slug}" class="${x.slug==slug?'on':''}">${x.city}</a>`).join('')})();
+// ---------- login ----------
+async function login(){const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:val('u'),password:val('p')})});
+ const d=await r.json();if(!r.ok)return toast(d.error);T=d.token;ME=d;$('login').hidden=true;$('app').hidden=false;
+ $('who').textContent=d.name;$('role').textContent='Role: '+d.role;home()}
+// ---------- home screen per role ----------
+function home(){CUR=null;let h=`<div class="card"><h3>🔎 Find a patient</h3><input id="q" placeholder="National ID or patient code"><button onclick="find()">Search</button><div id="res"></div></div>`;
+ if(ME.role=='receptionist')h+=`<div class="card"><h3>➕ Register new patient</h3><div class="grid"><input id="ni" placeholder="National ID"><input id="fn" placeholder="Full name"><input id="bd" type="date"><select id="ge"><option>Male</option><option>Female</option></select><input id="ph" placeholder="Phone"></div><button onclick="reg()">Register</button></div>`;
+ if(ME.role=='admin')h=`<div class="card"><h3>📜 Audit log</h3><button onclick="audit()">Load latest 200 actions</button><div id="res" class="tbl"></div></div>`;
+ $('panel').innerHTML=h}
+async function find(){const[o,d]=await api('/patients/search?q='+encodeURIComponent(val('q')));
+ $('res').innerHTML=!o?esc(d.error):(d.map(p=>`<div class="item"><b>${esc(p.full_name)}</b> <span class="badge">${p.patient_code}</span><div class="mut">ID ${esc(p.national_id)} · ${esc(p.gender||'')} · ${date(p.birth_date)}</div>`+
+  (ME.role=='receptionist'?`<button onclick="newVisit('${p.id}')">Open visit at this hospital</button>`:`<button onclick="openRec('${p.id}')">Open medical record</button>`)+`</div>`).join('')||'No patient found.')}
+async function reg(){const[o,d]=await api('/patients','POST',{national_id:val('ni'),full_name:val('fn'),birth_date:val('bd')||null,gender:val('ge'),phone:val('ph')});
+ toast(o?'Registered! Patient code: '+d.patient_code:d.error);if(o){$('q').value=d.patient_code;find()}}
+async function newVisit(id){const[,docs]=await api('/doctors');const opts=docs.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('');
+ $('res').insertAdjacentHTML('beforeend',`<div class="item"><select id="dc"><option value="">Any doctor</option>${opts}</select><input id="rs" placeholder="Reason for visit"><button onclick="saveVisit('${id}')">Create visit</button></div>`)}
+async function saveVisit(id){const[o,d]=await api('/visits','POST',{patient_id:id,doctor_id:val('dc')||null,reason:val('rs')});toast(o?'Visit opened ✔':d.error)}
+async function audit(){const[o,d]=await api('/audit');$('res').innerHTML='<table><tr><th>When</th><th>User</th><th>Action</th><th>Decision</th><th>Reason</th></tr>'+
+ d.map(a=>`<tr><td>${new Date(a.at).toLocaleString()}</td><td>${esc(a.username)}</td><td>${esc(a.permission)}</td><td>${a.decision}${a.emergency?' 🚨':''}</td><td>${esc(a.reason)}</td></tr>`).join('')+'</table>'}
+// ---------- medical record (doctor / nurse) ----------
+async function openRec(id,why=''){const[o,d]=await api(`/patients/${id}/record?emergency_reason=${encodeURIComponent(why)}`);
+ if(!o){if((d.error||'').includes('emergency')){const w=prompt(d.error+'\n\nEnter emergency justification:');if(w)return openRec(id,w)}return toast(d.error)}
+ CUR={id,why,d};draw()}
+function list(title,rows,f){return `<div class="card"><h3>${title}</h3>`+(rows.length?rows.map(r=>`<div class="item">${f(r)}<div class="mut">${date(r.created_at)} · <span class="badge">${esc(r.center_name||'')}</span></div></div>`).join(''):'<span class="mut">Nothing recorded yet.</span>')+'</div>'}
+function draw(){const{patient:p,visits,diagnoses,prescriptions,lab_results,imaging,notes,vitals}=CUR.d;
+ const open=visits.filter(v=>v.status=='open'&&v.center_id==ME.center);
+ let h=`<div class="card"><button class="ghost" onclick="home()">← Back</button><h3>👤 ${esc(p.full_name)} <span class="badge">${p.patient_code}</span></h3><div class="mut">National ID ${esc(p.national_id)} · ${esc(p.gender||'')} · born ${date(p.birth_date)} · ${visits.length} visit(s) across the network</div></div>`;
+ const vsel=`<select id="vid">${open.map(v=>`<option value="${v.id}">Visit #${v.id} – ${esc(v.reason||'')}</option>`).join('')||'<option value="">(no open visit here – ask reception)</option>'}</select>`;
+ const forms=[];
+ if(ME.role=='doctor'){forms.push(['Diagnosis','diagnoses',[['icd_code','ICD code (optional)'],['description','Diagnosis']]],['Prescription','prescriptions',[['drug','Drug'],['dose','Dose'],['duration','Duration']]],['Lab request','lab_requests',[['test_name','Test name']]]);}
+ if(ME.role=='nurse')forms.push(['Vital signs','vital_signs',[['bp','Blood pressure'],['pulse','Pulse'],['temp','Temp °C'],['spo2','SpO₂ %']]]);
+ forms.push(['Note','medical_notes',[['body','Note text']]]);
+ h+=`<div class="card"><h3>✍️ Add to this visit</h3>${vsel}<div class="grid">`+forms.map(([n,t,fs])=>`<div class="item"><b>${n}</b>`+fs.map(([k,ph])=>`<input id="${t}_${k}" placeholder="${ph}">`).join('')+`<button onclick="add('${t}',${JSON.stringify(fs.map(f=>f[0]))})">Save</button></div>`).join('')+`</div></div>`;
+ h+=list('🩺 Diagnoses',diagnoses,r=>`<b>${esc(r.description)}</b> ${esc(r.icd_code||'')}`)+list('💊 Prescriptions',prescriptions,r=>`<b>${esc(r.drug)}</b> – ${esc(r.dose||'')} ${esc(r.duration||'')}`)+
+  list('🧪 Lab results',lab_results,r=>`<b>${esc(r.test_name)}</b>: ${esc(r.result)} ${esc(r.unit||'')}`)+list('🖼️ Imaging',imaging,r=>`<b>${esc(r.modality||'')}</b> <a href="${esc(r.file_url)}" target="_blank">open image</a> ${esc(r.report||'')}`)+
+  list('📝 Notes',notes,r=>esc(r.body))+list('❤️ Vital signs',vitals,r=>`BP ${esc(r.bp)} · pulse ${r.pulse} · ${r.temp}°C · SpO₂ ${r.spo2}%`);
+ $('panel').innerHTML=h}
+async function add(t,keys){const vid=val('vid');if(!vid)return toast('No open visit at this hospital');const b={visit_id:+vid};keys.forEach(k=>b[k]=val(t+'_'+k)||null);
+ const[o,d]=await api(`/patients/${CUR.id}/${t}`,'POST',b);toast(o?'Saved ✔':d.error);if(o)openRec(CUR.id,CUR.why)}
+</script></body></html>
