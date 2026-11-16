@@ -30,7 +30,7 @@ button.ghost{background:transparent;color:var(--c);border:1px solid var(--c)}
 <script>
 // ---------- basics ----------
 const slug=location.pathname.split('/')[2]||'tripoli';          // which hospital page we are on (from the URL)
-let T='',ME={},CUR=null;                                         // T = login token, ME = who I am, CUR = patient record being viewed
+let T='',ME={},CUR=null,FLASH='';                                         // T = login token, ME = who I am, CUR = patient record being viewed
 const $=i=>document.getElementById(i), val=i=>$(i).value;
 const toast=m=>{const t=$('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3500)};
 async function api(path,method='GET',body){                      // talks to our server; sends the token as proof of login
@@ -64,23 +64,34 @@ async function saveVisit(id){const[o,d]=await api('/visits','POST',{patient_id:i
 async function audit(){const[o,d]=await api('/audit');$('res').innerHTML='<table><tr><th>When</th><th>User</th><th>Action</th><th>Decision</th><th>Reason</th></tr>'+
  d.map(a=>`<tr><td>${new Date(a.at).toLocaleString()}</td><td>${esc(a.username)}</td><td>${esc(a.permission)}</td><td>${a.decision}${a.emergency?' 🚨':''}</td><td>${esc(a.reason)}</td></tr>`).join('')+'</table>'}
 // ---------- medical record (doctor / nurse) ----------
-async function openRec(id,why=''){const[o,d]=await api(`/patients/${id}/record?emergency_reason=${encodeURIComponent(why)}`);
+async function openRec(id,why=''){FLASH='';const[o,d]=await api(`/patients/${id}/record?emergency_reason=${encodeURIComponent(why)}`);
  if(!o){if((d.error||'').includes('emergency')){const w=prompt(d.error+'\n\nEnter emergency justification:');if(w)return openRec(id,w)}return toast(d.error)}
  CUR={id,why,d};draw()}
 function list(title,rows,f){return `<div class="card"><h3>${title}</h3>`+(rows.length?rows.map(r=>`<div class="item">${f(r)}<div class="mut">${date(r.created_at)} · <span class="badge">${esc(r.center_name||'')}</span></div></div>`).join(''):'<span class="mut">Nothing recorded yet.</span>')+'</div>'}
-function draw(){const{patient:p,visits,diagnoses,prescriptions,lab_results,imaging,notes,vitals}=CUR.d;
+function draw(){const{patient:p,visits,diagnoses,prescriptions,lab_results,lab_requests,imaging,notes,vitals}=CUR.d;
  const open=visits.filter(v=>v.status=='open'&&v.center_id==ME.center);
- let h=`<div class="card"><button class="ghost" onclick="home()">← Back</button><h3>👤 ${esc(p.full_name)} <span class="badge">${p.patient_code}</span></h3><div class="mut">National ID ${esc(p.national_id)} · ${esc(p.gender||'')} · born ${date(p.birth_date)} · ${visits.length} visit(s) across the network</div></div>`;
- const vsel=`<select id="vid">${open.map(v=>`<option value="${v.id}">Visit #${v.id} – ${esc(v.reason||'')}</option>`).join('')||'<option value="">(no open visit here – ask reception)</option>'}</select>`;
- const forms=[];
- if(ME.role=='doctor'){forms.push(['Diagnosis','diagnoses',[['icd_code','ICD code (optional)'],['description','Diagnosis']]],['Prescription','prescriptions',[['drug','Drug'],['dose','Dose'],['duration','Duration']]],['Lab request','lab_requests',[['test_name','Test name']]]);}
- if(ME.role=='nurse')forms.push(['Vital signs','vital_signs',[['bp','Blood pressure'],['pulse','Pulse'],['temp','Temp °C'],['spo2','SpO₂ %']]]);
- forms.push(['Note','medical_notes',[['body','Note text']]]);
- h+=`<div class="card"><h3>✍️ Add to this visit</h3>${vsel}<div class="grid">`+forms.map(([n,t,fs])=>`<div class="item"><b>${n}</b>`+fs.map(([k,ph])=>`<input id="${t}_${k}" placeholder="${ph}">`).join('')+`<button onclick="add('${t}',${JSON.stringify(fs.map(f=>f[0]))})">Save</button></div>`).join('')+`</div></div>`;
+ let h=FLASH+`<div class="card"><button class="ghost" onclick="home()">← Back</button><h3>👤 ${esc(p.full_name)} <span class="badge">${p.patient_code}</span></h3><div class="mut">National ID ${esc(p.national_id)} · ${esc(p.gender||'')} · born ${date(p.birth_date)} · ${visits.length} visit(s) across the network</div></div>`;
+ const sec=(id,title,fs)=>`<div class="item"><b>${title}</b>`+fs.map(([k,ph])=>`<input id="f_${id}_${k}" placeholder="${ph}">`).join('')+`</div>`;
+ if(!open.length){h+=`<div class="card" style="border:2px solid #f59e0b"><b>⚠️ No open visit for this patient at this hospital, so nothing can be saved yet.</b><br>`+
+   (ME.role=='doctor'?`<input id="vr" placeholder="Reason for visit"><button onclick="startVisit()">Start visit now</button>`:'Ask reception to open a visit.')+`</div>`}
+ else{const S=[];
+  if(ME.role=='doctor')S.push(sec('diagnosis','🩺 Diagnosis',[['icd_code','ICD code (optional)'],['description','Diagnosis']]),sec('prescription','💊 Prescription',[['drug','Drug'],['dose','Dose'],['duration','Duration']]),sec('lab_request','🧪 Lab request',[['test_name','Test name']]));
+  if(ME.role=='nurse')S.push(sec('vitals','❤️ Vital signs',[['bp','Blood pressure'],['pulse','Pulse'],['temp','Temp °C'],['spo2','SpO₂ %']]));
+  S.push(sec('note','📝 Note',[['body','Note text']]));
+  h+=`<div class="card"><h3>✍️ New entry</h3><select id="vid">${open.map(v=>`<option value="${v.id}">Visit #${v.id} – ${esc(v.reason||'')}</option>`).join('')}</select><div class="grid">${S.join('')}</div>
+  <button onclick="saveAll()" style="font-size:17px;padding:12px 28px">💾 Save all</button><div id="msg"></div></div>`}
  h+=list('🩺 Diagnoses',diagnoses,r=>`<b>${esc(r.description)}</b> ${esc(r.icd_code||'')}`)+list('💊 Prescriptions',prescriptions,r=>`<b>${esc(r.drug)}</b> – ${esc(r.dose||'')} ${esc(r.duration||'')}`)+
-  list('🧪 Lab results',lab_results,r=>`<b>${esc(r.test_name)}</b>: ${esc(r.result)} ${esc(r.unit||'')}`)+list('🖼️ Imaging',imaging,r=>`<b>${esc(r.modality||'')}</b> <a href="${esc(r.file_url)}" target="_blank">open image</a> ${esc(r.report||'')}`)+
+  list('🧪 Lab requests',lab_requests,r=>`<b>${esc(r.test_name)}</b> – ${esc(r.status)}`)+list('🧪 Lab results',lab_results,r=>`<b>${esc(r.test_name)}</b>: ${esc(r.result)} ${esc(r.unit||'')}`)+list('🖼️ Imaging',imaging,r=>`<b>${esc(r.modality||'')}</b> <a href="${esc(r.file_url)}" target="_blank">open image</a> ${esc(r.report||'')}`)+
   list('📝 Notes',notes,r=>esc(r.body))+list('❤️ Vital signs',vitals,r=>`BP ${esc(r.bp)} · pulse ${r.pulse} · ${r.temp}°C · SpO₂ ${r.spo2}%`);
  $('panel').innerHTML=h}
-async function add(t,keys){const vid=val('vid');if(!vid)return toast('No open visit at this hospital');const b={visit_id:+vid};keys.forEach(k=>b[k]=val(t+'_'+k)||null);
- const[o,d]=await api(`/patients/${CUR.id}/${t}`,'POST',b);toast(o?'Saved ✔':d.error);if(o)openRec(CUR.id,CUR.why)}
+const NAMES={diagnoses:'Diagnosis',prescriptions:'Prescription',lab_requests:'Lab request',medical_notes:'Note',vital_signs:'Vital signs'};
+async function saveAll(){const vid=val('vid');const g=(s,ks)=>{const o={};ks.forEach(k=>{const el=$(`f_${s}_${k}`);o[k]=el?el.value.trim():''});return o};
+ const body={visit_id:+vid,diagnosis:$('f_diagnosis_description')?g('diagnosis',['icd_code','description']):null,prescription:$('f_prescription_drug')?g('prescription',['drug','dose','duration']):null,
+  lab_request:$('f_lab_request_test_name')?g('lab_request',['test_name']):null,note:g('note',['body']),vitals:$('f_vitals_bp')?g('vitals',['bp','pulse','temp','spo2']):null};
+ const[o,d]=await api(`/patients/${CUR.id}/save-all`,'POST',body);
+ if(!o){$('msg').innerHTML=`<div class="item" style="border-color:#dc2626;color:#dc2626"><b>❌ Not saved:</b> ${esc(d.error)}</div>`;return toast('❌ '+d.error)}
+ const names=d.saved.map(t=>NAMES[t]).join(', '),t=new Date().toLocaleTimeString();
+ await openRec(CUR.id,CUR.why);
+ FLASH=`<div class="card" style="border:2px solid #16a34a;background:#16a34a22"><b>✅ Saved successfully</b> at ${t}: ${names}</div>`;draw();window.scrollTo(0,0)}
+async function startVisit(){const[o,d]=await api(`/patients/${CUR.id}/start-visit`,'POST',{reason:val('vr'),emergency_reason:CUR.why});if(!o)return toast(d.error);await openRec(CUR.id,CUR.why)}
 </script></body></html>
