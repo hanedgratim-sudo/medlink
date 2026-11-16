@@ -41,12 +41,12 @@ app.get('/api/doctors',auth,async(q,r)=>r.json((await db.query("SELECT u.id,u.fu
 app.get('/api/patients/:id/record',auth,async(req,res)=>{const id=req.params.id;
  if(!await guard(req,res,'record.read',id,{emergency:req.query.emergency_reason}))return;
  const q=(t,x='')=>db.query(`SELECT t.*,c.name center_name FROM ${t} t LEFT JOIN medical_centers c ON c.id=${x||'(SELECT center_id FROM patient_visits v WHERE v.id=t.visit_id)'} WHERE t.patient_id=$1 ORDER BY t.created_at DESC`,[id]);
- const [p,v,d,rx,lr,im,n,vs]=await Promise.all([db.query('SELECT * FROM patients WHERE id=$1',[id]),
+ const [p,v,d,rx,lr,im,n,vs,lq]=await Promise.all([db.query('SELECT * FROM patients WHERE id=$1',[id]),
   db.query('SELECT v.*,c.name center_name FROM patient_visits v JOIN medical_centers c ON c.id=v.center_id WHERE patient_id=$1 ORDER BY created_at DESC',[id]),
   q('diagnoses'),q('prescriptions'),
   db.query('SELECT r.*,q.test_name,c.name center_name FROM lab_results r JOIN lab_requests q ON q.id=r.request_id LEFT JOIN medical_centers c ON c.id=r.performed_at_center WHERE r.patient_id=$1 ORDER BY r.created_at DESC',[id]),
-  q('imaging_records','t.performed_at_center'),q('medical_notes'),q('vital_signs')]);
- res.json({patient:p.rows[0],visits:v.rows,diagnoses:d.rows,prescriptions:rx.rows,lab_results:lr.rows,imaging:im.rows,notes:n.rows,vitals:vs.rows})});
+  q('imaging_records','t.performed_at_center'),q('medical_notes'),q('vital_signs'),q('lab_requests')]);
+ res.json({patient:p.rows[0],visits:v.rows,lab_requests:lq.rows,diagnoses:d.rows,prescriptions:rx.rows,lab_results:lr.rows,imaging:im.rows,notes:n.rows,vitals:vs.rows})});
 
 // Writes: always attached to an open visit at the writer's own center
 const visitOk=async(req,res,pid,vid)=>{const{rowCount}=await db.query("SELECT 1 FROM patient_visits WHERE id=$1 AND patient_id=$2 AND center_id=$3 AND status='open'",[vid,pid,req.user.center]);if(!rowCount)res.status(400).json({error:'Needs an open visit at your center'});return rowCount>0};
@@ -63,6 +63,28 @@ app.post('/api/patients/:id/imaging',auth,async(req,res)=>{if(!await guard(req,r
 // Admin: audit review (no clinical access at all)
 app.get('/api/audit',auth,async(req,res)=>{if(!await guard(req,res,'audit.read'))return;
  res.json((await db.query('SELECT a.*,u.username FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ORDER BY at DESC LIMIT 200')).rows)});
+
+// Save everything the clinician typed in ONE request (all-or-nothing transaction)
+app.post('/api/patients/:id/save-all',auth,async(req,res)=>{const pid=req.params.id,b=req.body,u=req.user;
+ const parts=[['diagnoses','diagnosis.write','doctor_id',b.diagnosis,['icd_code','description'],'description'],
+  ['prescriptions','prescription.write','doctor_id',b.prescription,['drug','dose','duration'],'drug'],
+  ['lab_requests','lab.request','doctor_id',b.lab_request,['test_name'],'test_name'],
+  ['medical_notes','note.write','author_id',b.note,['body'],'body'],
+  ['vital_signs','vitals.write','nurse_id',b.vitals,['bp','pulse','temp','spo2'],'bp']].filter(p=>p[3]&&p[3][p[5]]);
+ if(!parts.length)return res.status(400).json({error:'Nothing to save: fill in at least one section.'});
+ for(const p of parts)if(!await guard(req,res,p[1],pid))return;
+ if(!await visitOk(req,res,pid,b.visit_id))return;
+ const cl=await db.connect();
+ try{await cl.query('BEGIN');
+  for(const[t,,who,data,cols] of parts){const f=['visit_id','patient_id',who,...cols];
+   await cl.query(`INSERT INTO ${t}(${f}) VALUES(${f.map((_,i)=>'$'+(i+1))})`,[b.visit_id,pid,u.id,...cols.map(c=>data[c]||null)])}
+  await cl.query('COMMIT');res.json({saved:parts.map(p=>p[0])})}
+ catch(e){await cl.query('ROLLBACK');res.status(500).json({error:'Save failed: '+e.message})}finally{cl.release()}});
+// A doctor who was granted access can start a visit for the patient at their own hospital
+app.post('/api/patients/:id/start-visit',auth,async(req,res)=>{
+ if(req.user.role!=='doctor')return res.status(403).json({error:'Only doctors can start a visit'});
+ if(!await guard(req,res,'record.read',req.params.id,{emergency:req.body.emergency_reason}))return;
+ res.json((await db.query("INSERT INTO patient_visits(patient_id,center_id,doctor_id,reason,status) VALUES($1,$2,$3,$4,'open') RETURNING *",[req.params.id,req.user.center,req.user.id,req.body.reason||'Doctor-started visit'])).rows[0])});
 
 // One home page per hospital: /h/zliten, /h/tripoli, /h/misurata, /h/zawia
 app.get('/h/:slug',(q,r)=>r.sendFile(__dirname+'/public/index.html'));
