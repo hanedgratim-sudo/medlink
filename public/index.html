@@ -77,21 +77,32 @@ function draw(){const{patient:p,visits,diagnoses,prescriptions,lab_results,lab_r
  else{const S=[];
   if(ME.role=='doctor')S.push(sec('diagnosis','🩺 Diagnosis',[['icd_code','ICD code (optional)'],['description','Diagnosis']]),sec('prescription','💊 Prescription',[['drug','Drug'],['dose','Dose'],['duration','Duration']]),sec('lab_request','🧪 Lab request',[['test_name','Test name']]));
   if(ME.role=='nurse')S.push(sec('vitals','❤️ Vital signs',[['bp','Blood pressure'],['pulse','Pulse'],['temp','Temp °C'],['spo2','SpO₂ %']]));
+  if(ME.role=='doctor')S.push(`<div class="item"><b>🖼️ Medical image</b><select id="f_img_modality"><option>X-ray</option><option>CT</option><option>MRI</option><option>Ultrasound</option><option>Other</option></select><input id="f_img_report" placeholder="Radiology report / description"><input id="f_img_file" type="file" accept="image/png,image/jpeg,image/webp"></div>`);
   S.push(sec('note','📝 Note',[['body','Note text']]));
   h+=`<div class="card"><h3>✍️ New entry</h3><select id="vid">${open.map(v=>`<option value="${v.id}">Visit #${v.id} – ${esc(v.reason||'')}</option>`).join('')}</select><div class="grid">${S.join('')}</div>
   <button onclick="saveAll()" style="font-size:17px;padding:12px 28px">💾 Save all</button><div id="msg"></div></div>`}
  h+=list('🩺 Diagnoses',diagnoses,r=>`<b>${esc(r.description)}</b> ${esc(r.icd_code||'')}`)+list('💊 Prescriptions',prescriptions,r=>`<b>${esc(r.drug)}</b> – ${esc(r.dose||'')} ${esc(r.duration||'')}`)+
-  list('🧪 Lab requests',lab_requests,r=>`<b>${esc(r.test_name)}</b> – ${esc(r.status)}`)+list('🧪 Lab results',lab_results,r=>`<b>${esc(r.test_name)}</b>: ${esc(r.result)} ${esc(r.unit||'')}`)+list('🖼️ Imaging',imaging,r=>`<b>${esc(r.modality||'')}</b> <a href="${esc(r.file_url)}" target="_blank">open image</a> ${esc(r.report||'')}`)+
+  list('🧪 Lab requests',lab_requests,r=>`<b>${esc(r.test_name)}</b> – ${esc(r.status)}`)+list('🧪 Lab results',lab_results,r=>`<b>${esc(r.test_name)}</b>: ${esc(r.result)} ${esc(r.unit||'')}`)+list('🖼️ Medical images',imaging,r=>`<b>${esc(r.modality||'')}</b> ${esc(r.file_name||'')} ${esc(r.report||'')}<br>`+(r.mime_type?`<button class="ghost" onclick="showImg(${r.id})">View image</button><div id="img_${r.id}"></div>`:`<a href="${esc(r.file_url)}" target="_blank">open link</a>`))+
   list('📝 Notes',notes,r=>esc(r.body))+list('❤️ Vital signs',vitals,r=>`BP ${esc(r.bp)} · pulse ${r.pulse} · ${r.temp}°C · SpO₂ ${r.spo2}%`);
  $('panel').innerHTML=h}
 const NAMES={diagnoses:'Diagnosis',prescriptions:'Prescription',lab_requests:'Lab request',medical_notes:'Note',vital_signs:'Vital signs'};
+const b64=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result.split(',')[1]);r.onerror=no;r.readAsDataURL(f)});
+async function showImg(id){const r=await fetch(`/api/imaging/${id}/file?emergency_reason=${encodeURIComponent(CUR.why)}`,{headers:{Authorization:'Bearer '+T}});
+ if(!r.ok){let m='Cannot load image';try{m=(await r.json()).error}catch{}return toast(m)}
+ $('img_'+id).innerHTML=`<img src="${URL.createObjectURL(await r.blob())}" style="max-width:100%;border-radius:10px;margin-top:8px">`}
 async function saveAll(){const vid=val('vid');const g=(s,ks)=>{const o={};ks.forEach(k=>{const el=$(`f_${s}_${k}`);o[k]=el?el.value.trim():''});return o};
  const body={visit_id:+vid,diagnosis:$('f_diagnosis_description')?g('diagnosis',['icd_code','description']):null,prescription:$('f_prescription_drug')?g('prescription',['drug','dose','duration']):null,
   lab_request:$('f_lab_request_test_name')?g('lab_request',['test_name']):null,note:g('note',['body']),vitals:$('f_vitals_bp')?g('vitals',['bp','pulse','temp','spo2']):null};
- const[o,d]=await api(`/patients/${CUR.id}/save-all`,'POST',body);
- if(!o){$('msg').innerHTML=`<div class="item" style="border-color:#dc2626;color:#dc2626"><b>❌ Not saved:</b> ${esc(d.error)}</div>`;return toast('❌ '+d.error)}
- const names=d.saved.map(t=>NAMES[t]).join(', '),t=new Date().toLocaleTimeString();
- await openRec(CUR.id,CUR.why);
- FLASH=`<div class="card" style="border:2px solid #16a34a;background:#16a34a22"><b>✅ Saved successfully</b> at ${t}: ${names}</div>`;draw();window.scrollTo(0,0)}
+ const file=$('f_img_file')?$('f_img_file').files[0]:null;
+ const hasText=[body.diagnosis&&body.diagnosis.description,body.prescription&&body.prescription.drug,body.lab_request&&body.lab_request.test_name,body.note.body,body.vitals&&body.vitals.bp].some(Boolean);
+ const fail=m=>{$('msg').innerHTML=`<div class="item" style="border-color:#dc2626;color:#dc2626"><b>❌ Not saved:</b> ${esc(m)}</div>`;toast('❌ '+m)};
+ if(!hasText&&!file)return fail('Fill in at least one section or choose an image.');
+ if(file&&file.size>3*1024*1024)return fail('The image is larger than 3 MB.');
+ let names=[];
+ if(hasText){const[o,d]=await api(`/patients/${CUR.id}/save-all`,'POST',body);if(!o)return fail(d.error);names=d.saved.map(t=>NAMES[t])}
+ if(file){const[o,d]=await api(`/patients/${CUR.id}/imaging`,'POST',{visit_id:+vid,modality:val('f_img_modality'),report:val('f_img_report'),file_name:file.name,mime_type:file.type,data_base64:await b64(file)});
+  if(!o)return fail((names.length?'Your other entries WERE saved, but the image failed: ':'')+d.error);names.push('Medical image')}
+ const t=new Date().toLocaleTimeString();await openRec(CUR.id,CUR.why);
+ FLASH=`<div class="card" style="border:2px solid #16a34a;background:#16a34a22"><b>✅ Saved successfully</b> at ${t}: ${names.join(', ')}</div>`;draw();window.scrollTo(0,0)}
 async function startVisit(){const[o,d]=await api(`/patients/${CUR.id}/start-visit`,'POST',{reason:val('vr'),emergency_reason:CUR.why});if(!o)return toast(d.error);await openRec(CUR.id,CUR.why)}
 </script></body></html>
