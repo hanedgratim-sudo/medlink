@@ -87,9 +87,11 @@ function draw(){const{patient:p,visits,diagnoses,prescriptions,lab_results,lab_r
  $('panel').innerHTML=h}
 const NAMES={diagnoses:'Diagnosis',prescriptions:'Prescription',lab_requests:'Lab request',medical_notes:'Note',vital_signs:'Vital signs'};
 const b64=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result.split(',')[1]);r.onerror=no;r.readAsDataURL(f)});
-async function showImg(id){const r=await fetch(`/api/imaging/${id}/file?emergency_reason=${encodeURIComponent(CUR.why)}`,{headers:{Authorization:'Bearer '+T}});
- if(!r.ok){let m='Cannot load image';try{m=(await r.json()).error}catch{}return toast(m)}
- $('img_'+id).innerHTML=`<img src="${URL.createObjectURL(await r.blob())}" style="max-width:100%;border-radius:10px;margin-top:8px">`}
+async function showImg(id){const box=$('img_'+id);box.textContent='Loading...';
+ try{const r=await fetch(`/api/imaging/${id}/file?emergency_reason=${encodeURIComponent(CUR.why)}`,{headers:{Authorization:'Bearer '+T}});
+  if(!r.ok){let m='';try{m=(await r.json()).error}catch{}box.innerHTML=`<div class="item" style="border-color:#dc2626;color:#dc2626">❌ Could not load image (code ${r.status}) ${esc(m)}</div>`;return}
+  box.innerHTML=`<img src="${URL.createObjectURL(await r.blob())}" style="max-width:100%;border-radius:10px;margin-top:8px">`}
+ catch(e){box.innerHTML=`<div class="item" style="border-color:#dc2626;color:#dc2626">❌ Network error: ${esc(e.message)}</div>`}}
 async function saveAll(){const vid=val('vid');const g=(s,ks)=>{const o={};ks.forEach(k=>{const el=$(`f_${s}_${k}`);o[k]=el?el.value.trim():''});return o};
  const body={visit_id:+vid,diagnosis:$('f_diagnosis_description')?g('diagnosis',['icd_code','description']):null,prescription:$('f_prescription_drug')?g('prescription',['drug','dose','duration']):null,
   lab_request:$('f_lab_request_test_name')?g('lab_request',['test_name']):null,note:g('note',['body']),vitals:$('f_vitals_bp')?g('vitals',['bp','pulse','temp','spo2']):null};
