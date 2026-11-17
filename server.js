@@ -1,6 +1,6 @@
 const express=require('express'),{Pool}=require('pg'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken');
 const db=new Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false}});
-const SECRET=process.env.JWT_SECRET||'change-me';const app=express();app.use(express.json());app.use(express.static('public'));
+const SECRET=process.env.JWT_SECRET||'change-me';const app=express();app.use(express.json({limit:'5mb'}));app.use(express.static('public'));
 const log=(u,patient,permission,decision,reason,emergency,req)=>db.query('INSERT INTO audit_logs(user_id,center_id,patient_id,action,permission,decision,reason,emergency,ip) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
  [u.id,u.center,patient||null,req.method+' '+req.path,permission,decision,reason||null,!!emergency,req.ip]);
 
@@ -45,7 +45,7 @@ app.get('/api/patients/:id/record',auth,async(req,res)=>{const id=req.params.id;
   db.query('SELECT v.*,c.name center_name FROM patient_visits v JOIN medical_centers c ON c.id=v.center_id WHERE patient_id=$1 ORDER BY created_at DESC',[id]),
   q('diagnoses'),q('prescriptions'),
   db.query('SELECT r.*,q.test_name,c.name center_name FROM lab_results r JOIN lab_requests q ON q.id=r.request_id LEFT JOIN medical_centers c ON c.id=r.performed_at_center WHERE r.patient_id=$1 ORDER BY r.created_at DESC',[id]),
-  q('imaging_records','t.performed_at_center'),q('medical_notes'),q('vital_signs'),q('lab_requests')]);
+  db.query('SELECT t.id,t.visit_id,t.patient_id,t.modality,t.file_url,t.file_name,t.mime_type,t.report,t.created_at,c.name center_name FROM imaging_records t LEFT JOIN medical_centers c ON c.id=t.performed_at_center WHERE t.patient_id=$1 ORDER BY t.created_at DESC',[id]),q('medical_notes'),q('vital_signs'),q('lab_requests')]);
  res.json({patient:p.rows[0],visits:v.rows,lab_requests:lq.rows,diagnoses:d.rows,prescriptions:rx.rows,lab_results:lr.rows,imaging:im.rows,notes:n.rows,vitals:vs.rows})});
 
 // Writes: always attached to an open visit at the writer's own center
@@ -56,9 +56,22 @@ for(const t in W)app.post(`/api/patients/:id/${t}`,auth,async(req,res)=>{const[p
  if(!await guard(req,res,perm,pid))return;if(!await visitOk(req,res,pid,req.body.visit_id))return;
  const f=['visit_id','patient_id',who,...cols],v=[req.body.visit_id,pid,req.user.id,...cols.map(c=>req.body[c]??null)];
  res.json((await db.query(`INSERT INTO ${t}(${f}) VALUES(${f.map((_,i)=>'$'+(i+1))}) RETURNING *`,v)).rows[0])});
-// Imaging: upload the file to free storage (Supabase/Cloudinary) from the browser, then store its URL here
-app.post('/api/patients/:id/imaging',auth,async(req,res)=>{if(!await guard(req,res,'lab.request',req.params.id))return;
- res.json((await db.query('INSERT INTO imaging_records(visit_id,patient_id,modality,file_url,report,performed_at_center) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[req.body.visit_id,req.params.id,req.body.modality,req.body.file_url,req.body.report,req.user.center])).rows[0])});
+// Medical images: the FILE is stored inside the central database (BYTEA) and can only be read through guarded API calls
+const IMG_TYPES=['image/png','image/jpeg','image/webp'];
+app.post('/api/patients/:id/imaging',auth,async(req,res)=>{const pid=req.params.id,b=req.body;
+ if(!await guard(req,res,'imaging.upload',pid))return;if(!await visitOk(req,res,pid,b.visit_id))return;
+ if(!IMG_TYPES.includes(b.mime_type))return res.status(400).json({error:'Only PNG, JPG or WEBP images are allowed'});
+ const buf=Buffer.from(b.data_base64||'','base64');
+ if(!buf.length||buf.length>3*1024*1024)return res.status(400).json({error:'Image must be smaller than 3 MB'});
+ const{rows:[r]}=await db.query('INSERT INTO imaging_records(visit_id,patient_id,modality,file_name,mime_type,file_data,report,performed_at_center) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+  [b.visit_id,pid,b.modality||'Other',b.file_name||'image',b.mime_type,buf,b.report||null,req.user.center]);
+ res.json({id:r.id})});
+app.get('/api/imaging/:iid/file',auth,async(req,res)=>{
+ if(!/^\d+$/.test(req.params.iid))return res.status(404).json({error:'Image not found'});
+ const{rows:[r]}=await db.query('SELECT patient_id,mime_type,file_data FROM imaging_records WHERE id=$1 AND file_data IS NOT NULL',[req.params.iid]);
+ if(!r)return res.status(404).json({error:'Image not found'});
+ if(!await guard(req,res,'record.read',r.patient_id,{emergency:req.query.emergency_reason}))return;
+ res.set({'Content-Type':r.mime_type,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}).send(r.file_data)});
 
 // Admin: audit review (no clinical access at all)
 app.get('/api/audit',auth,async(req,res)=>{if(!await guard(req,res,'audit.read'))return;
